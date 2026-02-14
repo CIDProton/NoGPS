@@ -1,5 +1,7 @@
 #include "simulator_gdi.hpp"
 
+#include <cmath>
+
 #include <windows.h>
 
 #include <cstdlib>
@@ -16,10 +18,47 @@ constexpr int kLeftPanelWidth = 640;
 constexpr float kFrameDt = 0.016f;
 constexpr float kCoreViewScale = 1.4f;
 
-std::vector<LineSegment> walls;
+const int MAP_W = 640;          // ширина левой панели
+const int MAP_H = 800;          // высота левой панели
+std::vector<bool> worldMap(MAP_W * MAP_H, false);
 Vec2 dronePos(400.0f, 300.0f);
 Vec2 droneVel(0.0f, 0.0f);
 DroneCore core;
+
+void generateCaveMap() {
+    // Инициализация случайным шумом
+    for (int i = 0; i < MAP_W * MAP_H; i++) {
+        worldMap[i] = (rand() % 100 < 45); // ~45% стен
+    }
+
+    // Несколько итераций клеточного автомата для сглаживания
+    for (int iter = 0; iter < 5; iter++) {
+        std::vector<bool> newMap = worldMap;
+        for (int y = 1; y < MAP_H - 1; y++) {
+            for (int x = 1; x < MAP_W - 1; x++) {
+                int neighbors = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (worldMap[(y + dy) * MAP_W + (x + dx)]) neighbors++;
+                    }
+                }
+                // Правило: если больше 4 соседей — стена, иначе — пусто
+                newMap[y * MAP_W + x] = (neighbors > 4);
+            }
+        }
+        worldMap.swap(newMap);
+    }
+
+    // Убедимся, что границы всегда стены
+    for (int x = 0; x < MAP_W; x++) {
+        worldMap[0 * MAP_W + x] = true;
+        worldMap[(MAP_H - 1) * MAP_W + x] = true;
+    }
+    for (int y = 0; y < MAP_H; y++) {
+        worldMap[y * MAP_W + 0] = true;
+        worldMap[y * MAP_W + (MAP_W - 1)] = true;
+    }
+}
 
 void DrawLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color, int thickness = 1) {
     HPEN hPen = CreatePen(PS_SOLID, thickness, color);
@@ -153,14 +192,20 @@ void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
     BitBlt(hdcWindow, 0, 0, kWindowWidth, kWindowHeight, hdcMem, 0, 0, SRCCOPY);
 }
 
-void initMap() {
-    walls.clear();
-    walls.push_back({{100, 100}, {1100, 100}});
-    walls.push_back({{100, 700}, {1100, 700}});
-    walls.push_back({{100, 100}, {100, 700}});
-    walls.push_back({{1100, 100}, {1100, 700}});
-    walls.push_back({{400, 100}, {400, 500}});
-    walls.push_back({{800, 700}, {800, 300}});
+void initWorld() {
+    generateCaveMap();
+
+    // Найти свободное место для дрона (не в стене)
+    for (int y = 1; y < MAP_H - 1; y++) {
+        for (int x = 1; x < MAP_W - 1; x++) {
+            if (!worldMap[y * MAP_W + x]) {
+                dronePos = Vec2((float)x, (float)y);
+                return;
+            }
+        }
+    }
+    // Запасной вариант
+    dronePos = Vec2(100.0f, 100.0f);
 }
 
 }  // namespace
