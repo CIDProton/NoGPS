@@ -119,7 +119,7 @@ void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVe
 
     int activeCount = 0;
     for (auto& node : mapGraph) {
-        if (std::abs(node.id - currentNodeIndex) > 4 && !node.isOffloaded) {
+        if (std::abs(node.id - currentNodeIndex) > 14 && !node.isOffloaded) {
             node.localFeatures.clear();
             node.isOffloaded = true;
         }
