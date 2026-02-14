@@ -1,12 +1,11 @@
 #include "simulator_gdi.hpp"
 
-#include <cmath>
-
 #include <windows.h>
-
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <algorithm>   // для std::min, std::max
 
 #include "nogps_core.hpp"
 
@@ -18,17 +17,22 @@ constexpr int kLeftPanelWidth = 640;
 constexpr float kFrameDt = 0.016f;
 constexpr float kCoreViewScale = 1.4f;
 
-const int MAP_W = 640;          // ширина левой панели
-const int MAP_H = 800;          // высота левой панели
+// Размеры карты (левая панель)
+const int MAP_W = 640;
+const int MAP_H = 800;
 std::vector<bool> worldMap(MAP_W * MAP_H, false);
+
 Vec2 dronePos(400.0f, 300.0f);
 Vec2 droneVel(0.0f, 0.0f);
 DroneCore core;
 
+// ---------------------------------------------------------------------
+// Генерация пещер клеточным автоматом (из новой версии)
+// ---------------------------------------------------------------------
 void generateCaveMap() {
     // Инициализация случайным шумом
     for (int i = 0; i < MAP_W * MAP_H; i++) {
-        worldMap[i] = (rand() % 100 < 45); // ~45% стен
+        worldMap[i] = (rand() % 100 < 45);   // ~45% стен
     }
 
     // Несколько итераций клеточного автомата для сглаживания
@@ -60,6 +64,9 @@ void generateCaveMap() {
     }
 }
 
+// ---------------------------------------------------------------------
+// Вспомогательные функции рисования (без изменений)
+// ---------------------------------------------------------------------
 void DrawLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color, int thickness = 1) {
     HPEN hPen = CreatePen(PS_SOLID, thickness, color);
     HGDIOBJ hOld = SelectObject(hdc, hPen);
@@ -83,39 +90,31 @@ void DrawCircle(HDC hdc, int x, int y, int r, COLORREF color, bool filled) {
     DeleteObject(hPen);
 }
 
+// ---------------------------------------------------------------------
+// Ray marching по растровой карте (вместо старого пересечения отрезков)
+// ---------------------------------------------------------------------
 float CastRay(Vec2 start, Vec2 dir) {
-    float minDst = 100.0f;
-    const Vec2 end = start + dir * minDst;
-
-    for (const auto& w : walls) {
-        const float x1 = w.start.x;
-        const float y1 = w.start.y;
-        const float x2 = w.end.x;
-        const float y2 = w.end.y;
-        const float x3 = start.x;
-        const float y3 = start.y;
-        const float x4 = end.x;
-        const float y4 = end.y;
-
-        const float den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (den == 0.0f) {
-            continue;
+    float maxDist = 100.0f;
+    float step = 0.5f;
+    float dist = 0.0f;
+    while (dist < maxDist) {
+        float x = start.x + dir.x * dist;
+        float y = start.y + dir.y * dist;
+        // Проверка границ карты
+        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) {
+            return maxDist;   // упёрлись в край мира
         }
-
-        const float t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
-        const float u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den;
-        if (t > 0.0f && t < 1.0f && u > 0.0f && u < 1.0f) {
-            const Vec2 pt = {x1 + t * (x2 - x1), y1 + t * (y2 - y1)};
-            const float dst = start.dist(pt);
-            if (dst < minDst) {
-                minDst = dst;
-            }
+        if (worldMap[(int)y * MAP_W + (int)x]) {
+            return dist;      // стена
         }
+        dist += step;
     }
-
-    return minDst;
+    return maxDist;
 }
 
+// ---------------------------------------------------------------------
+// Преобразование мировых координат в экранные для правой панели (без изменений)
+// ---------------------------------------------------------------------
 POINT toCoreView(Vec2 worldPoint, Vec2 center) {
     const float localX = (worldPoint.x - center.x) * kCoreViewScale;
     const float localY = (worldPoint.y - center.y) * kCoreViewScale;
@@ -126,6 +125,9 @@ POINT toCoreView(Vec2 worldPoint, Vec2 center) {
     return pt;
 }
 
+// ---------------------------------------------------------------------
+// Оконная процедура (без изменений)
+// ---------------------------------------------------------------------
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_DESTROY:
@@ -138,22 +140,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
 }
 
+// ---------------------------------------------------------------------
+// Отрисовка кадра (изменён только вывод стен)
+// ---------------------------------------------------------------------
 void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
     RECT rect = {0, 0, kWindowWidth, kWindowHeight};
     FillRect(hdcMem, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
 
+    // Вертикальная разделительная линия
     DrawLine(hdcMem, kLeftPanelWidth, 0, kLeftPanelWidth, kWindowHeight, RGB(100, 100, 100));
 
-    for (const auto& w : walls) {
-        DrawLine(hdcMem, static_cast<int>(w.start.x), static_cast<int>(w.start.y), static_cast<int>(w.end.x), static_cast<int>(w.end.y), RGB(255, 255, 255), 3);
+    // ---- Левая панель: стены (растровая карта) ----
+    // Рисуем каждый пиксель стены как белый прямоугольник 1x1
+    for (int y = 0; y < MAP_H; y++) {
+        for (int x = 0; x < MAP_W; x++) {
+            if (worldMap[y * MAP_W + x]) {
+                DrawLine(hdcMem, x, y, x, y, RGB(255, 255, 255));
+            }
+        }
     }
+
+    // ---- Лидаровские лучи и точки ----
     for (const auto& p : scan) {
         const Vec2 pt = dronePos + p.toCartesian();
-        DrawLine(hdcMem, static_cast<int>(dronePos.x), static_cast<int>(dronePos.y), static_cast<int>(pt.x), static_cast<int>(pt.y), RGB(50, 50, 50));
+        DrawLine(hdcMem,
+                 static_cast<int>(dronePos.x), static_cast<int>(dronePos.y),
+                 static_cast<int>(pt.x), static_cast<int>(pt.y),
+                 RGB(50, 50, 50));
     }
-    DrawCircle(hdcMem, static_cast<int>(dronePos.x), static_cast<int>(dronePos.y), 8, RGB(0, 255, 0), true);
+    // Реальный дрон (зелёный)
+    DrawCircle(hdcMem,
+               static_cast<int>(dronePos.x), static_cast<int>(dronePos.y),
+               8, RGB(0, 255, 0), true);
 
+    // ---- Правая панель: отладочная информация ядра ----
     const Vec2 estPos = core.getEstPos();
+
+    // Линии текущих признаков (голубые)
     const auto lines = core.getDebugLines();
     for (const auto& line : lines) {
         const POINT p1 = toCoreView(line.start, estPos);
@@ -161,6 +184,7 @@ void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
         DrawLine(hdcMem, p1.x, p1.y, p2.x, p2.y, RGB(0, 255, 255), 2);
     }
 
+    // Граф памяти
     const auto graph = core.getGraph();
     for (const auto& node : graph) {
         COLORREF color = node.isOffloaded ? RGB(100, 100, 100) : RGB(255, 0, 0);
@@ -168,34 +192,39 @@ void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
         DrawCircle(hdcMem, nPos.x, nPos.y, 4, color, true);
 
         for (int id : node.connectedNodes) {
-            if (id < 0 || id >= static_cast<int>(graph.size())) {
-                continue;
-            }
+            if (id < 0 || id >= static_cast<int>(graph.size())) continue;
             const POINT p2 = toCoreView(graph[id].position, estPos);
             DrawLine(hdcMem, nPos.x, nPos.y, p2.x, p2.y, color);
         }
     }
 
+    // Центр (оценённое положение дрона)
     const POINT center = toCoreView(estPos, estPos);
     DrawCircle(hdcMem, center.x, center.y, 6, RGB(0, 255, 0), false);
 
+    // Логи (жёлтый текст)
     const std::string logs = core.getLogs();
     SetTextColor(hdcMem, RGB(255, 255, 0));
     SetBkMode(hdcMem, TRANSPARENT);
     RECT textRect = {650, 600, 1200, 800};
     DrawText(hdcMem, logs.c_str(), -1, &textRect, DT_LEFT);
 
+    // Пояснительные надписи
     TextOut(hdcMem, 10, 10, "SIMULATION REALITY", 18);
     TextOut(hdcMem, 650, 10, "CORE MEMORY VIEW", 16);
     TextOut(hdcMem, 650, 30, "Centered on estimated drone position", 35);
 
+    // Перенос буфера на экран
     BitBlt(hdcWindow, 0, 0, kWindowWidth, kWindowHeight, hdcMem, 0, 0, SRCCOPY);
 }
 
+// ---------------------------------------------------------------------
+// Инициализация мира (генерация пещер и поиск свободного места)
+// ---------------------------------------------------------------------
 void initWorld() {
     generateCaveMap();
 
-    // Найти свободное место для дрона (не в стене)
+    // Ищем первую свободную клетку (не стену)
     for (int y = 1; y < MAP_H - 1; y++) {
         for (int x = 1; x < MAP_W - 1; x++) {
             if (!worldMap[y * MAP_W + x]) {
@@ -204,14 +233,18 @@ void initWorld() {
             }
         }
     }
-    // Запасной вариант
+    // Запасной вариант (если вся карта забита)
     dronePos = Vec2(100.0f, 100.0f);
 }
 
-}  // namespace
+} // namespace
 
+// ---------------------------------------------------------------------
+// Главная функция симулятора
+// ---------------------------------------------------------------------
 int runSimulator() {
-    initMap();
+    // Инициализация мира (вместо старой initMap)
+    initWorld();
 
     const char CLASS_NAME[] = "NoGPS_Sim_Class";
     WNDCLASS wc = {};
@@ -223,7 +256,7 @@ int runSimulator() {
     HWND hwnd = CreateWindowEx(
         0,
         CLASS_NAME,
-        "NoGPS Core Simulator (GDI Version)",
+        "NoGPS Core Simulator (GDI Version) - Cave World",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -250,34 +283,36 @@ int runSimulator() {
             DispatchMessage(&msg);
         }
 
+        // Управление (WASD)
         Vec2 inputVel(0.0f, 0.0f);
-        if (GetAsyncKeyState('W') & 0x8000) {
-            inputVel.y = -100.0f;
-        }
-        if (GetAsyncKeyState('S') & 0x8000) {
-            inputVel.y = 100.0f;
-        }
-        if (GetAsyncKeyState('A') & 0x8000) {
-            inputVel.x = -100.0f;
-        }
-        if (GetAsyncKeyState('D') & 0x8000) {
-            inputVel.x = 100.0f;
-        }
+        if (GetAsyncKeyState('W') & 0x8000) inputVel.y = -100.0f;
+        if (GetAsyncKeyState('S') & 0x8000) inputVel.y = 100.0f;
+        if (GetAsyncKeyState('A') & 0x8000) inputVel.x = -100.0f;
+        if (GetAsyncKeyState('D') & 0x8000) inputVel.x = 100.0f;
 
+        // Сканирование лидаром
         std::vector<LidarPoint> scan;
         constexpr int kNumRays = 100;
         scan.reserve(kNumRays);
         for (int i = 0; i < kNumRays; i++) {
-            const float angle = (i * 2.0f * PI) / kNumRays;
-            const float dst = CastRay(dronePos, {std::cos(angle), std::sin(angle)});
-            const float noise = ((std::rand() % 100) / 100.0f) * 3.0f;
+            float angle = (i * 2.0f * PI) / kNumRays;
+            float dst = CastRay(dronePos, {std::cos(angle), std::sin(angle)});
+            float noise = ((std::rand() % 100) / 100.0f) * 3.0f;
             scan.push_back({angle, dst + noise});
         }
 
+        // Обновление физики
         droneVel = inputVel + core.velocityCommand;
         dronePos = dronePos + droneVel * kFrameDt;
+
+        // Простое удержание дрона в пределах карты (чтобы не улететь за границы)
+        dronePos.x = std::max(1.0f, std::min((float)(MAP_W - 2), dronePos.x));
+        dronePos.y = std::max(1.0f, std::min((float)(MAP_H - 2), dronePos.y));
+
+        // Обновление ядра
         core.update(kFrameDt, scan, droneVel);
 
+        // Отрисовка
         drawFrame(hdcMem, hdcWindow, scan);
         Sleep(16);
     }
