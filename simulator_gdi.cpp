@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>   // для std::min, std::max
+#include <cstdint>     // для uint32_t
 
 #include "nogps_core.hpp"
 
@@ -22,12 +23,16 @@ const int MAP_W = 640;
 const int MAP_H = 800;
 std::vector<bool> worldMap(MAP_W * MAP_H, false);
 
+// Буфер пикселей для левой панели (формат 32-bit ABGR, но под Windows BI_RGB обычно BGR)
+uint32_t mapPixels[MAP_H][MAP_W]; // [y][x] – каждый uint32_t хранит цвет 0x00BBGGRR (или 0x00RRGGBB в зависимости от порядка)
+// Для простоты используем RGB: белый 0x00FFFFFF, чёрный 0x00000000.
+
 Vec2 dronePos(400.0f, 300.0f);
 Vec2 droneVel(0.0f, 0.0f);
 DroneCore core;
 
 // ---------------------------------------------------------------------
-// Генерация пещер клеточным автоматом (из новой версии)
+// Генерация пещер клеточным автоматом
 // ---------------------------------------------------------------------
 void generateCaveMap() {
     // Инициализация случайным шумом
@@ -65,7 +70,21 @@ void generateCaveMap() {
 }
 
 // ---------------------------------------------------------------------
-// Вспомогательные функции рисования (без изменений)
+// Обновление пиксельного буфера левой панели по текущей карте
+// ---------------------------------------------------------------------
+void updateMapBuffer() {
+    for (int y = 0; y < MAP_H; ++y) {
+        for (int x = 0; x < MAP_W; ++x) {
+            // worldMap хранится линейно, обращаемся по индексу y*MAP_W + x
+            // Белый цвет для стен, чёрный для пустоты.
+            // Формат: 0x00BBGGRR (little-endian, в памяти BGR). Установим все компоненты в 0xFF для белого.
+            mapPixels[y][x] = worldMap[y * MAP_W + x] ? 0x00FFFFFF : 0x00000000;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Вспомогательные функции рисования
 // ---------------------------------------------------------------------
 void DrawLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color, int thickness = 1) {
     HPEN hPen = CreatePen(PS_SOLID, thickness, color);
@@ -91,29 +110,68 @@ void DrawCircle(HDC hdc, int x, int y, int r, COLORREF color, bool filled) {
 }
 
 // ---------------------------------------------------------------------
-// Ray marching по растровой карте (вместо старого пересечения отрезков)
+// DDA Ray marching по растровой карте
 // ---------------------------------------------------------------------
 float CastRay(Vec2 start, Vec2 dir) {
-    float maxDist = 100.0f;
-    float step = 0.5f;
-    float dist = 0.0f;
-    while (dist < maxDist) {
-        float x = start.x + dir.x * dist;
-        float y = start.y + dir.y * dist;
-        // Проверка границ карты
-        if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) {
-            return maxDist;   // упёрлись в край мира
+    // Начальная клетка
+    int x = static_cast<int>(start.x);
+    int y = static_cast<int>(start.y);
+
+    // Направления шага
+    int stepX = (dir.x > 0) ? 1 : -1;
+    int stepY = (dir.y > 0) ? 1 : -1;
+
+    // Расстояния до ближайших границ клетки по x и y
+    float tMaxX, tMaxY;
+    if (dir.x != 0.0f) {
+        float nextX = (stepX > 0) ? (x + 1 - start.x) : (start.x - x);
+        tMaxX = nextX / fabs(dir.x);
+    } else {
+        tMaxX = INFINITY;
+    }
+
+    if (dir.y != 0.0f) {
+        float nextY = (stepY > 0) ? (y + 1 - start.y) : (start.y - y);
+        tMaxY = nextY / fabs(dir.y);
+    } else {
+        tMaxY = INFINITY;
+    }
+
+    // Шаг по сетке (приращение t при переходе на следующую клетку)
+    float tDeltaX = (dir.x != 0.0f) ? 1.0f / fabs(dir.x) : INFINITY;
+    float tDeltaY = (dir.y != 0.0f) ? 1.0f / fabs(dir.y) : INFINITY;
+
+    const float maxDist = 100.0f;
+
+    while (true) {
+        // Проверка текущей клетки (если она в пределах карты и является стеной)
+        if (x >= 0 && x < MAP_W && y >= 0 && y < MAP_H) {
+            if (worldMap[y * MAP_W + x]) {
+                // Нашли стену. Возвращаем расстояние до точки входа в клетку.
+                // Точное расстояние до пересечения: минимальное из tMaxX, tMaxY.
+                return std::min(tMaxX, tMaxY);
+            }
+        } else {
+            // Выход за пределы карты – считаем дальней стеной.
+            return maxDist;
         }
-        if (worldMap[(int)y * MAP_W + (int)x]) {
-            return dist;      // стена
+
+        // Переходим к следующей клетке
+        if (tMaxX < tMaxY) {
+            if (tMaxX > maxDist) break;
+            x += stepX;
+            tMaxX += tDeltaX;
+        } else {
+            if (tMaxY > maxDist) break;
+            y += stepY;
+            tMaxY += tDeltaY;
         }
-        dist += step;
     }
     return maxDist;
 }
 
 // ---------------------------------------------------------------------
-// Преобразование мировых координат в экранные для правой панели (без изменений)
+// Преобразование мировых координат в экранные для правой панели
 // ---------------------------------------------------------------------
 POINT toCoreView(Vec2 worldPoint, Vec2 center) {
     const float localX = (worldPoint.x - center.x) * kCoreViewScale;
@@ -126,7 +184,7 @@ POINT toCoreView(Vec2 worldPoint, Vec2 center) {
 }
 
 // ---------------------------------------------------------------------
-// Оконная процедура (без изменений)
+// Оконная процедура
 // ---------------------------------------------------------------------
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -141,7 +199,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 }
 
 // ---------------------------------------------------------------------
-// Отрисовка кадра (изменён только вывод стен)
+// Отрисовка кадра (оптимизированная)
 // ---------------------------------------------------------------------
 void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
     RECT rect = {0, 0, kWindowWidth, kWindowHeight};
@@ -150,15 +208,22 @@ void drawFrame(HDC hdcMem, HDC hdcWindow, const std::vector<LidarPoint>& scan) {
     // Вертикальная разделительная линия
     DrawLine(hdcMem, kLeftPanelWidth, 0, kLeftPanelWidth, kWindowHeight, RGB(100, 100, 100));
 
-    // ---- Левая панель: стены (растровая карта) ----
-    // Рисуем каждый пиксель стены как белый прямоугольник 1x1
-    for (int y = 0; y < MAP_H; y++) {
-        for (int x = 0; x < MAP_W; x++) {
-            if (worldMap[y * MAP_W + x]) {
-                DrawLine(hdcMem, x, y, x, y, RGB(255, 255, 255));
-            }
-        }
-    }
+    // ---- Левая панель: стены (растровая карта) - БЫСТРАЯ ОТРИСОВКА ЧЕРЕЗ ПИКСЕЛЬНЫЙ БУФЕР ----
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = MAP_W;
+    bmi.bmiHeader.biHeight = -MAP_H; // отрицательная высота, чтобы первый ряд пикселей был верхним
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    StretchDIBits(hdcMem,
+                  0, 0, MAP_W, MAP_H,
+                  0, 0, MAP_W, MAP_H,
+                  mapPixels,                // указатель на пиксели
+                  &bmi,
+                  DIB_RGB_COLORS,
+                  SRCCOPY);
 
     // ---- Лидаровские лучи и точки ----
     for (const auto& p : scan) {
@@ -243,8 +308,10 @@ void initWorld() {
 // Главная функция симулятора
 // ---------------------------------------------------------------------
 int runSimulator() {
-    // Инициализация мира (вместо старой initMap)
+    // Инициализация мира
     initWorld();
+    // После генерации карты обновляем пиксельный буфер
+    updateMapBuffer();
 
     const char CLASS_NAME[] = "NoGPS_Sim_Class";
     WNDCLASS wc = {};
@@ -290,7 +357,7 @@ int runSimulator() {
         if (GetAsyncKeyState('A') & 0x8000) inputVel.x = -100.0f;
         if (GetAsyncKeyState('D') & 0x8000) inputVel.x = 100.0f;
 
-        // Сканирование лидаром
+        // Сканирование лидаром (DDA ray marching)
         std::vector<LidarPoint> scan;
         constexpr int kNumRays = 100;
         scan.reserve(kNumRays);
@@ -314,7 +381,7 @@ int runSimulator() {
 
         // Отрисовка
         drawFrame(hdcMem, hdcWindow, scan);
-        Sleep(16);
+        Sleep(4);
     }
 
     SelectObject(hdcMem, oldBmp);
