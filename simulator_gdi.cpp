@@ -17,16 +17,112 @@ float kCoreViewScale = 0.6f;
 
 const int MAP_W = 640;
 const int MAP_H = 800;
-std::vector<bool> worldMap(MAP_W * MAP_H, false);
+std::vector<bool> worldMap(MAP_W * MAP_H, false); // true = wall
 uint32_t mapPixels[MAP_H][MAP_W];
 
 Vec2 dronePos(100.0f, 100.0f);
 Vec2 droneVel(0.0f, 0.0f);
+Vec2 mapSpawn(100.0f, 100.0f);
 DroneCore core;
 
 DWORD lastFpsUpdate = 0;
 int frameCount = 0;
 float currentFps = 0.0f;
+
+inline bool inBounds(int x, int y) {
+    return x >= 0 && x < MAP_W && y >= 0 && y < MAP_H;
+}
+
+bool isWallCell(int x, int y) {
+    if (!inBounds(x, y)) {
+        return true;
+    }
+    return worldMap[y * MAP_W + x];
+}
+
+void setWallCell(int x, int y, bool isWall) {
+    if (inBounds(x, y)) {
+        worldMap[y * MAP_W + x] = isWall;
+    }
+}
+
+void carveDisk(int cx, int cy, int radius) {
+    for (int y = cy - radius; y <= cy + radius; ++y) {
+        for (int x = cx - radius; x <= cx + radius; ++x) {
+            if (!inBounds(x, y)) {
+                continue;
+            }
+            const int dx = x - cx;
+            const int dy = y - cy;
+            if (dx * dx + dy * dy <= radius * radius) {
+                setWallCell(x, y, false);
+            }
+        }
+    }
+}
+
+void carveEllipseRoom(int cx, int cy, int rx, int ry) {
+    for (int y = cy - ry; y <= cy + ry; ++y) {
+        for (int x = cx - rx; x <= cx + rx; ++x) {
+            if (!inBounds(x, y)) {
+                continue;
+            }
+            const float nx = static_cast<float>(x - cx) / static_cast<float>(rx);
+            const float ny = static_cast<float>(y - cy) / static_cast<float>(ry);
+            if (nx * nx + ny * ny <= 1.0f) {
+                setWallCell(x, y, false);
+            }
+        }
+    }
+}
+
+void carveTunnel(Vec2 a, Vec2 b, int radius) {
+    Vec2 d = b - a;
+    const float len = d.length();
+    if (len < 1.0f) {
+        carveDisk(static_cast<int>(a.x), static_cast<int>(a.y), radius);
+        return;
+    }
+
+    const int steps = static_cast<int>(len / 2.0f);
+    Vec2 dir = d * (1.0f / len);
+    Vec2 p = a;
+    for (int i = 0; i <= steps; ++i) {
+        carveDisk(static_cast<int>(p.x), static_cast<int>(p.y), radius);
+
+        const float sideJitter = static_cast<float>((rand() % 100) - 50) * 0.02f;
+        Vec2 jitter(-dir.y * sideJitter, dir.x * sideJitter);
+        p = p + dir * 2.0f + jitter;
+    }
+}
+
+bool isAreaFree(Vec2 p, int radius) {
+    for (int y = static_cast<int>(p.y) - radius; y <= static_cast<int>(p.y) + radius; ++y) {
+        for (int x = static_cast<int>(p.x) - radius; x <= static_cast<int>(p.x) + radius; ++x) {
+            if (isWallCell(x, y)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+Vec2 pickSafeSpawn(const std::vector<Vec2>& roomCenters) {
+    for (const Vec2& c : roomCenters) {
+        if (isAreaFree(c, 10)) {
+            return c;
+        }
+    }
+
+    for (int i = 0; i < 5000; ++i) {
+        Vec2 p(static_cast<float>(rand() % (MAP_W - 40) + 20), static_cast<float>(rand() % (MAP_H - 40) + 20));
+        if (isAreaFree(p, 10)) {
+            return p;
+        }
+    }
+
+    return Vec2(100.0f, 100.0f);
+}
 
 void updateMapBuffer() {
     for (int y = 0; y < MAP_H; ++y) {
@@ -37,140 +133,86 @@ void updateMapBuffer() {
 }
 
 void generateCaveMap() {
-    // Initialize with lower wall density to create more open space
-    for (int i = 0; i < MAP_W * MAP_H; ++i) {
-        worldMap[i] = (rand() % 100 < 40);  // Reduced from 45 to 40 for more open space
+    // 1) Start from solid walls
+    std::fill(worldMap.begin(), worldMap.end(), true);
+
+    // 2) Create large rooms with different sizes
+    std::vector<Vec2> roomCenters;
+    const int roomCount = 11 + rand() % 6;
+    roomCenters.reserve(roomCount);
+
+    for (int i = 0; i < roomCount; ++i) {
+        const int cx = 50 + rand() % (MAP_W - 100);
+        const int cy = 50 + rand() % (MAP_H - 100);
+        const int rx = 22 + rand() % 70;
+        const int ry = 20 + rand() % 60;
+        carveEllipseRoom(cx, cy, rx, ry);
+        roomCenters.push_back(Vec2(static_cast<float>(cx), static_cast<float>(cy)));
     }
 
-    // Apply cellular automata with adjusted rules for better connectivity
-    for (int iter = 0; iter < 5; ++iter) {
-        std::vector<bool> newMap = worldMap;
+    // 3) Connect rooms with tunnels (chain + random cross-links)
+    for (size_t i = 1; i < roomCenters.size(); ++i) {
+        const int r = 4 + rand() % 4;
+        carveTunnel(roomCenters[i - 1], roomCenters[i], r);
+    }
+    for (int i = 0; i < roomCount / 2; ++i) {
+        int a = rand() % roomCount;
+        int b = rand() % roomCount;
+        if (a == b) {
+            b = (b + 1) % roomCount;
+        }
+        carveTunnel(roomCenters[a], roomCenters[b], 3 + rand() % 4);
+    }
+
+    // 4) Add smaller side caverns
+    const int sideCaves = 18 + rand() % 14;
+    for (int i = 0; i < sideCaves; ++i) {
+        const int cx = 30 + rand() % (MAP_W - 60);
+        const int cy = 30 + rand() % (MAP_H - 60);
+        carveEllipseRoom(cx, cy, 8 + rand() % 22, 8 + rand() % 20);
+    }
+
+    // 5) Smooth shape with cave cellular automata
+    for (int iter = 0; iter < 3; ++iter) {
+        std::vector<bool> next = worldMap;
         for (int y = 1; y < MAP_H - 1; ++y) {
             for (int x = 1; x < MAP_W - 1; ++x) {
-                int neighbors = 0;
+                int wallNeighbors = 0;
                 for (int dy = -1; dy <= 1; ++dy) {
                     for (int dx = -1; dx <= 1; ++dx) {
-                        if (worldMap[(y + dy) * MAP_W + (x + dx)]) {
-                            ++neighbors;
+                        if (dx == 0 && dy == 0) {
+                            continue;
+                        }
+                        if (isWallCell(x + dx, y + dy)) {
+                            ++wallNeighbors;
                         }
                     }
                 }
-                
-                // Adjusted rules to create larger open areas but maintain wall connectivity
-                if (neighbors > 4) {
-                    newMap[y * MAP_W + x] = true;
-                } else if (neighbors < 4) {
-                    newMap[y * MAP_W + x] = false;
+                if (worldMap[y * MAP_W + x]) {
+                    next[y * MAP_W + x] = (wallNeighbors >= 4);
                 } else {
-                    // Keep original value in edge cases to preserve structure
-                    newMap[y * MAP_W + x] = worldMap[y * MAP_W + x];
+                    next[y * MAP_W + x] = (wallNeighbors >= 6);
                 }
             }
         }
-        worldMap = newMap;
+        worldMap.swap(next);
     }
 
-    // Second pass with different rules to enhance connectivity
-    for (int iter = 0; iter < 3; ++iter) {
-        std::vector<bool> newMap = worldMap;
-        for (int y = 2; y < MAP_H - 2; ++y) {
-            for (int x = 2; x < MAP_W - 2; ++x) {
-                int neighbors = 0;
-                // Check a wider area to promote connectivity
-                for (int dy = -2; dy <= 2; ++dy) {
-                    for (int dx = -2; dx <= 2; ++dx) {
-                        if (abs(dx) + abs(dy) <= 2) { // Use diamond-shaped neighborhood
-                            if (worldMap[(y + dy) * MAP_W + (x + dx)]) {
-                                ++neighbors;
-                            }
-                        }
-                    }
-                }
-                
-                // Promote openness but maintain structural integrity
-                if (neighbors > 10) {
-                    newMap[y * MAP_W + x] = true;  // Keep large wall sections
-                } else if (neighbors < 6) {
-                    newMap[y * MAP_W + x] = false; // Keep open areas open
-                } else {
-                    newMap[y * MAP_W + x] = worldMap[y * MAP_W + x];
-                }
-            }
-        }
-        worldMap = newMap;
+    // 6) Keep map borders solid
+    for (int x = 0; x < MAP_W; ++x) {
+        setWallCell(x, 0, true);
+        setWallCell(x, MAP_H - 1, true);
     }
-
-    // Ensure border areas are clear for drone starting position
-    // Clear a 20-pixel border around the edges to ensure drone can move
     for (int y = 0; y < MAP_H; ++y) {
-        for (int x = 0; x < MAP_W; ++x) {
-            if (x < 20 || x >= MAP_W - 20 || y < 20 || y >= MAP_H - 20) {
-                worldMap[y * MAP_W + x] = false; // Clear border areas
-            }
-        }
+        setWallCell(0, y, true);
+        setWallCell(MAP_W - 1, y, true);
     }
 
-    // Ensure starting area is clear
-    for (int y = 80; y < 120; ++y) {
-        for (int x = 80; x < 120; ++x) {
-            worldMap[y * MAP_W + x] = false; // Clear starting area around (100,100)
-        }
-    }
-
-    // Connect separate areas by carving tunnels
-    // Find isolated open areas and connect them
-    std::vector<std::vector<bool>> visited(MAP_H, std::vector<bool>(MAP_W, false));
-    
-    // Find all open areas and connect them
-    for (int y = 20; y < MAP_H - 20; ++y) {
-        for (int x = 20; x < MAP_W - 20; ++x) {
-            if (!worldMap[y * MAP_W + x] && !visited[y][x]) {
-                // Found an open area, mark it as visited
-                std::vector<std::pair<int, int>> openArea;
-                std::vector<std::pair<int, int>> queue;
-                queue.push_back({x, y});
-                visited[y][x] = true;
-                
-                while (!queue.empty()) {
-                    auto [cx, cy] = queue.back();
-                    queue.pop_back();
-                    openArea.push_back({cx, cy});
-                    
-                    // Check 4-connected neighbors
-                    int dx[] = {-1, 1, 0, 0};
-                    int dy[] = {0, 0, -1, 1};
-                    
-                    for (int i = 0; i < 4; ++i) {
-                        int nx = cx + dx[i];
-                        int ny = cy + dy[i];
-                        
-                        if (nx >= 20 && nx < MAP_W - 20 && ny >= 20 && ny < MAP_H - 20 &&
-                            !worldMap[ny * MAP_W + nx] && !visited[ny][nx]) {
-                            visited[ny][nx] = true;
-                            queue.push_back({nx, ny});
-                        }
-                    }
-                }
-                
-                // If this open area is too small, expand it slightly
-                if (openArea.size() < 100) {
-                    // Expand this small area by clearing some adjacent walls
-                    for (const auto& [ox, oy] : openArea) {
-                        for (int dy = -2; dy <= 2; ++dy) {
-                            for (int dx = -2; dx <= 2; ++dx) {
-                                int nx = ox + dx;
-                                int ny = oy + dy;
-                                
-                                if (nx >= 20 && nx < MAP_W - 20 && ny >= 20 && ny < MAP_H - 20) {
-                                    worldMap[ny * MAP_W + nx] = false; // Clear to make area larger
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // 7) Pick safe spawn and ensure local area free
+    mapSpawn = pickSafeSpawn(roomCenters);
+    carveDisk(static_cast<int>(mapSpawn.x), static_cast<int>(mapSpawn.y), 14);
+    dronePos = mapSpawn;
+    droneVel = Vec2(0.0f, 0.0f);
 
     updateMapBuffer();
 }
@@ -196,15 +238,6 @@ void DrawCircle(HDC hdc, int x, int y, int r, COLORREF color, bool filled) {
         DeleteObject(hBrush);
     }
     DeleteObject(hPen);
-}
-
-bool isPositionInWall(Vec2 pos) {
-    int ix = (int)pos.x;
-    int iy = (int)pos.y;
-    if (ix < 0 || ix >= MAP_W || iy < 0 || iy >= MAP_H) {
-        return true; // Treat out of bounds as wall
-    }
-    return worldMap[iy * MAP_W + ix];
 }
 
 float CastRay(Vec2 start, Vec2 dir) {
@@ -386,7 +419,7 @@ int runSimulator() {
         if (GetAsyncKeyState('R') & 0x8000) {
             generateCaveMap();
             core.reset();
-            dronePos = {100.0f, 100.0f};
+            dronePos = mapSpawn;
         }
 
         std::vector<LidarPoint> scan;
@@ -399,31 +432,21 @@ int runSimulator() {
         }
 
         droneVel = input + core.velocityCommand;
-        Vec2 newDronePos = dronePos + droneVel * kFrameDt;
-        
-        // Boundary checking to prevent drone from going out of bounds
-        if (newDronePos.x < 5.0f) newDronePos.x = 5.0f;
-        if (newDronePos.x >= MAP_W - 5.0f) newDronePos.x = MAP_W - 5.0f;
-        if (newDronePos.y < 5.0f) newDronePos.y = 5.0f;
-        if (newDronePos.y >= MAP_H - 5.0f) newDronePos.y = MAP_H - 5.0f;
-        
-        // Wall collision detection - prevent drone from entering walls
-        if (!isPositionInWall(newDronePos)) {
-            dronePos = newDronePos;
-        } else {
-            // If the new position is in a wall, try to find a valid position along the path
-            // by interpolating between the current position and the attempted position
-            for (float t = 0.9f; t > 0.0f; t -= 0.1f) {
-                Vec2 interpolatedPos = dronePos + (newDronePos - dronePos) * t;
-                if (!isPositionInWall(interpolatedPos)) {
-                    dronePos = interpolatedPos;
-                    break;
-                }
-            }
-            // If all interpolation attempts failed, keep the original position and zero velocity
-            droneVel = Vec2(0.0f, 0.0f);
+
+        // collision-safe move with axis separation and radius check
+        const float bodyRadius = 6.0f;
+        Vec2 target = dronePos + droneVel * kFrameDt;
+
+        Vec2 tryX(target.x, dronePos.y);
+        if (isAreaFree(tryX, static_cast<int>(bodyRadius))) {
+            dronePos.x = tryX.x;
         }
-        
+
+        Vec2 tryY(dronePos.x, target.y);
+        if (isAreaFree(tryY, static_cast<int>(bodyRadius))) {
+            dronePos.y = tryY.y;
+        }
+
         core.update(kFrameDt, scan, droneVel);
 
         drawFrame(hdcMem, hwnd, scan);
