@@ -8,8 +8,8 @@
 constexpr float PI = 3.14159265359f;
 
 struct CoreParams {
-    float splitTolerance = 6.0f;
-    float mergeTolerance = 25.0f;
+    float splitTolerance = 4.0f;    // Уменьшено для точности
+    float mergeTolerance = 15.0f;   // Уменьшено, чтобы не склеивать параллельные коридоры
     float newNodeDist = 120.0f;
     float reflexDist = 45.0f;
     float reflexForce = 15.0f;
@@ -25,8 +25,10 @@ struct Vec2 {
     Vec2 operator-(const Vec2& other) const;
     Vec2 operator*(float scalar) const;
     float length() const;
+    float lengthSq() const;
     Vec2 normalized() const;
     float dist(const Vec2& other) const;
+    float dot(const Vec2& other) const;
 };
 
 struct LineSegment {
@@ -77,7 +79,11 @@ private:
     void processMemory();
     void saveNodeToDisk(int id);
     void loadNodeFromDisk(int id);
+    
+    // Новые методы для коррекции
     std::vector<LidarPoint> preprocessScan(const std::vector<LidarPoint>& scan) const;
+    void alignScanToMap(const std::vector<LidarPoint>& cleanScan); 
+    void pruneMap(const std::vector<LidarPoint>& scan); 
 
     void recursiveSplit(const std::vector<Vec2>& points, int start, int end, std::vector<LineSegment>& result);
     void mergeIntoGlobal(const std::vector<LineSegment>& newLines);
@@ -90,4 +96,6 @@ private:
     std::string memoryLog;
     size_t currentRamUsage = 0;
     Vec2 smoothedVelocityCommand;
+    
+    int pruneTimer = 0; // Таймер для редкого запуска очистки
 };
