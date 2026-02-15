@@ -152,7 +152,7 @@ void generateCaveMap() {
 
     // 3) Connect rooms with tunnels (chain + random cross-links)
     for (size_t i = 1; i < roomCenters.size(); ++i) {
-        const int r = 4 + rand() % 4;
+        const int r = 10 + rand() % 6;
         carveTunnel(roomCenters[i - 1], roomCenters[i], r);
     }
     for (int i = 0; i < roomCount / 2; ++i) {
@@ -161,7 +161,7 @@ void generateCaveMap() {
         if (a == b) {
             b = (b + 1) % roomCount;
         }
-        carveTunnel(roomCenters[a], roomCenters[b], 3 + rand() % 4);
+        carveTunnel(roomCenters[a], roomCenters[b], 8 + rand() % 5);
     }
 
     // 4) Add smaller side caverns
@@ -308,7 +308,7 @@ void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
         Vec2 end = dronePos + p.toCartesian();
         DrawLine(hdcMem, (int)dronePos.x, (int)dronePos.y, (int)end.x, (int)end.y, RGB(50, 50, 50));
     }
-    DrawCircle(hdcMem, (int)dronePos.x, (int)dronePos.y, 7, RGB(0, 255, 0), true);
+    DrawCircle(hdcMem, (int)dronePos.x, (int)dronePos.y, 4, RGB(0, 255, 0), true);
 
     Vec2 estPos = core.getEstPos();
     for (const auto& l : core.getGlobalLines()) {
@@ -434,7 +434,7 @@ int runSimulator() {
         droneVel = input + core.velocityCommand;
 
         // collision-safe move with axis separation and radius check
-        const float bodyRadius = 6.0f;
+        const float bodyRadius = 5.0f;
         Vec2 target = dronePos + droneVel * kFrameDt;
 
         Vec2 tryX(target.x, dronePos.y);

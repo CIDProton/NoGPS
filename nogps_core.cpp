@@ -102,9 +102,14 @@ void DroneCore::reset() {
 }
 
 void DroneCore::recursiveSplit(const std::vector<Vec2>& points, int start, int end, std::vector<LineSegment>& result) {
+    // Базовый случай: мало точек
     if (end - start < 2) {
-        if (end - start == 1 && points[start].dist(points[end]) > 5.0f) {
-             result.push_back({points[start], points[end]});
+        if (end - start == 1) {
+            // Рисуем линию только если точки близко!
+            // Это защита от "микро-фантомов"
+            if (points[start].dist(points[end]) < 20.0f) {
+                result.push_back({points[start], points[end]});
+            }
         }
         return;
     }
@@ -125,10 +130,11 @@ void DroneCore::recursiveSplit(const std::vector<Vec2>& points, int start, int e
         recursiveSplit(points, start, idx, result);
         recursiveSplit(points, idx, end, result);
     } else {
-        // Проверяем, не слишком ли длинная линия для "пустого" места
-        if (points[start].dist(points[end]) > 5.0f) {
-            result.push_back({points[start], points[end]});
-        }
+        // Если аппроксимация хорошая, добавляем сегмент
+        // НО! Проверяем длину сегмента. Если мы соединяем точки через полкомнаты (например, на открытом месте)
+        // и между ними ничего нет - возможно это ошибка, но recursiveSplit работает внутри кластера,
+        // так что тут уже должны быть только близкие точки.
+        result.push_back({points[start], points[end]});
     }
 }
 
@@ -136,21 +142,18 @@ void DroneCore::mergeIntoGlobal(const std::vector<LineSegment>& newLines) {
     for (const auto& nl : newLines) {
         bool merged = false;
         
-        // Попробуем найти похожую линию в глобальной карте
         for (auto& gl : globalLines) {
-            // Проверка 1: Центры линий рядом?
             Vec2 midNew = (nl.start + nl.end) * 0.5f;
             Vec2 midOld = (gl.start + gl.end) * 0.5f;
             
+            // Если центры линий рядом
             if (midNew.dist(midOld) < params.mergeTolerance) {
-                // Проверка 2: Углы линий похожи? (dot product)
                 Vec2 dirNew = (nl.end - nl.start).normalized();
                 Vec2 dirOld = (gl.end - gl.start).normalized();
                 float dot = std::fabs(dirNew.dot(dirOld));
                 
-                if (dot > 0.9f) { // ~25 градусов отклонение макс
-                    // Сливаем: берем среднее взвешенное
-                    // (тут простой вариант: двигаем концы старой линии к новой на 10%)
+                // И угол совпадает
+                if (dot > 0.9f) {
                     gl.start = gl.start * 0.9f + nl.start * 0.1f;
                     gl.end = gl.end * 0.9f + nl.end * 0.1f;
                     merged = true;
@@ -164,44 +167,31 @@ void DroneCore::mergeIntoGlobal(const std::vector<LineSegment>& newLines) {
         }
     }
 
-    // Лимит векторов, чтобы память не текла вечно в симуляторе
     if (globalLines.size() > 2000) {
         globalLines.erase(globalLines.begin(), globalLines.begin() + 100);
     }
 }
 
-// -----------------------------------------------------------------------------
-// SCAN MATCHING (ICP Lite)
-// Корректирует estimatedPos на основе совпадения скана с картой
-// -----------------------------------------------------------------------------
 void DroneCore::alignScanToMap(const std::vector<LidarPoint>& cleanScan) {
     if (globalLines.empty() || cleanScan.size() < 10) return;
 
     Vec2 totalCorrection(0.0f, 0.0f);
     int matchCount = 0;
-    const float kSearchRadius = 30.0f; // Ищем стены в радиусе 30px
+    const float kSearchRadius = 30.0f; 
 
     for (const auto& p : cleanScan) {
-        // Где эта точка по мнению нашего текущего (возможно ошибочного) положения
         Vec2 worldPoint = estimatedPos + p.toCartesian();
 
         float bestDist = kSearchRadius;
         Vec2 bestClosestPoint;
         bool found = false;
 
-        // Ищем ближайшую стену
-        // (В реальном продакшене тут нужен QuadTree или Grid, но для 2000 линий O(N) сойдет)
         for (const auto& line : globalLines) {
-            // Быстрая проверка bounding box
-            float minX = std::min(line.start.x, line.end.x) - kSearchRadius;
-            float maxX = std::max(line.start.x, line.end.x) + kSearchRadius;
-            float minY = std::min(line.start.y, line.end.y) - kSearchRadius;
-            float maxY = std::max(line.start.y, line.end.y) + kSearchRadius;
-
-            if (worldPoint.x < minX || worldPoint.x > maxX || 
-                worldPoint.y < minY || worldPoint.y > maxY) {
-                continue;
-            }
+            // Bounding box optimization
+            if (worldPoint.x < std::min(line.start.x, line.end.x) - kSearchRadius) continue;
+            if (worldPoint.x > std::max(line.start.x, line.end.x) + kSearchRadius) continue;
+            if (worldPoint.y < std::min(line.start.y, line.end.y) - kSearchRadius) continue;
+            if (worldPoint.y > std::max(line.start.y, line.end.y) + kSearchRadius) continue;
 
             Vec2 closest;
             float d = distToLineSegment(worldPoint, line.start, line.end, closest);
@@ -213,7 +203,6 @@ void DroneCore::alignScanToMap(const std::vector<LidarPoint>& cleanScan) {
         }
 
         if (found) {
-            // Вектор ошибки: куда надо сдвинуть точку скана, чтобы она легла на стену
             Vec2 error = bestClosestPoint - worldPoint;
             totalCorrection = totalCorrection + error;
             matchCount++;
@@ -221,45 +210,28 @@ void DroneCore::alignScanToMap(const std::vector<LidarPoint>& cleanScan) {
     }
 
     if (matchCount > 5) {
-        // Усредняем коррекцию
         Vec2 avgCorrection = totalCorrection * (1.0f / matchCount);
-        
-        // Применяем "Gain" (коэффициент доверия). 0.2 - плавная коррекция.
-        // Если коррекция слишком большая (>15), значит мы потерялись или это новая комната,
-        // лучше не телепортироваться резко.
         if (avgCorrection.length() < 15.0f) {
             estimatedPos = estimatedPos + avgCorrection * 0.3f;
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// MAP PRUNING (Raycasting cleanup)
-// Удаляет линии, которые лидар видит "насквозь"
-// -----------------------------------------------------------------------------
 void DroneCore::pruneMap(const std::vector<LidarPoint>& scan) {
     if (globalLines.empty()) return;
 
-    // Идем задом наперед, чтобы безопасно удалять
     for (int i = static_cast<int>(globalLines.size()) - 1; i >= 0; --i) {
         Vec2 mid = (globalLines[i].start + globalLines[i].end) * 0.5f;
         Vec2 toLine = mid - estimatedPos;
         float distToLineCenter = toLine.length();
 
-        // Если стена далеко, мы не можем быть уверены, что "пробили" её
-        if (distToLineCenter > 200.0f) continue; 
-        if (distToLineCenter < 10.0f) continue; // Слишком близко, может быть глюк
+        if (distToLineCenter > 250.0f) continue; 
+        if (distToLineCenter < 15.0f) continue; 
 
         float angleToLine = std::atan2(toLine.y, toLine.x);
-        
-        // Ищем соответствующий луч лидара
-        // Лидар сканирует 360 градусов. Найдем луч с минимальной разницей угла.
-        // (Предполагаем, что скан упорядочен или плотный)
-        
         float minAngleDiff = 100.0f;
         float observedDist = 0.0f;
         
-        // Простой перебор (можно оптимизировать через индекс, зная шаг лидара)
         for (const auto& p : scan) {
             float diff = wrappedAngleDiff(p.angle, angleToLine);
             if (diff < minAngleDiff) {
@@ -268,10 +240,8 @@ void DroneCore::pruneMap(const std::vector<LidarPoint>& scan) {
             }
         }
 
-        // Если нашли луч, который смотрит прямо в центр линии (с допуском ~3 градуса)
         if (minAngleDiff < 0.05f) {
-            // ГЛАВНОЕ УСЛОВИЕ: Лидар видит ЗНАЧИТЕЛЬНО дальше, чем стоит эта стена.
-            // Значит стены тут нет (это был призрак, дрейф или дверь открылась).
+            // Если мы видим "сквозь" стену (дальше на 30 единиц), значит стены нет
             if (observedDist > distToLineCenter + 30.0f) {
                 globalLines.erase(globalLines.begin() + i);
             }
@@ -315,54 +285,15 @@ std::vector<LidarPoint> DroneCore::preprocessScan(const std::vector<LidarPoint>&
     std::vector<LidarPoint> filtered;
     filtered.reserve(scan.size());
 
-    // 1. Фильтр дальности (отсекаем слишком близкие шумы и "бесконечность")
+    // 1. Фильтр дальности - ОТСЕКАЕМ БЕСКОНЕЧНОСТЬ
+    // Если луч улетел в "молоко" (490+), мы его не используем для картографии,
+    // чтобы не рисовать стены на горизонте.
     for (const auto& p : scan) {
-        if (p.dist > 10.0f && p.dist < 490.0f) {
+        if (p.dist > 10.0f && p.dist < 480.0f) { // < 480 (было 490), чтобы с запасом от макс рейкаста
             filtered.push_back(p);
         }
     }
-
-    if (filtered.size() < 5) return filtered;
-
-    // 2. Медианный фильтр (очень простой) для удаления одиночных выбросов
-    std::vector<LidarPoint> smoothed = filtered;
-    for (size_t i = 1; i + 1 < filtered.size(); ++i) {
-        float d1 = filtered[i-1].dist;
-        float d2 = filtered[i].dist;
-        float d3 = filtered[i+1].dist;
-        // Если точка резко выбивается от соседей -> заменяем средним
-        if (std::fabs(d2 - d1) > 10.0f && std::fabs(d2 - d3) > 10.0f) {
-            smoothed[i].dist = (d1 + d3) * 0.5f;
-        }
-    }
-
-    // 3. Сегментация (разрываем скан на кластеры)
-    std::vector<LidarPoint> segmented;
-    segmented.reserve(smoothed.size());
-    if (!smoothed.empty()) segmented.push_back(smoothed.front());
-
-    for (size_t i = 1; i < smoothed.size(); ++i) {
-        const auto& prev = smoothed[i - 1];
-        const auto& cur = smoothed[i];
-        
-        const float jump = std::fabs(cur.dist - prev.dist);
-        // Используем реальную декартову дистанцию между точками для разрыва
-        // (prev_vec - cur_vec).length() - но приближенно:
-        
-        // Разрыв если: резкий скачок глубины ИЛИ резкий угол
-        // 15.0f - порог разрыва глубины
-        if (jump > 15.0f) {
-            // Это разрыв объектов. Не соединяем их линией в recursiveSplit,
-            // но нам нужен непрерывный массив точек для split. 
-            // Хитрость: мы просто добавим "Nan" точку или разобьем обработку выше.
-            // Но в текущей архитектуре recursiveSplit работает с массивом.
-            // Поэтому просто оставим как есть, но recursiveSplit учтет дистанцию.
-        }
-        
-        segmented.push_back(cur);
-    }
-
-    return segmented;
+    return filtered;
 }
 
 size_t DroneCore::estimateRamUsageBytes() const {
@@ -378,24 +309,19 @@ size_t DroneCore::estimateRamUsageBytes() const {
 void DroneCore::processMemory() {
     currentRamUsage = estimateRamUsageBytes();
 
-    // Алгоритм выгрузки (как был, работает нормально)
     while (currentRamUsage > params.ramLimitBytes) {
         int bestIdx = -1;
         float bestDist = 0.0f;
-
         for (int i = 0; i < static_cast<int>(mapGraph.size()); ++i) {
             const auto& node = mapGraph[i];
             if (node.isOffloaded || node.id == currentNodeIndex) continue;
-            
             float dist = node.position.dist(estimatedPos);
             if (dist > bestDist) {
                 bestDist = dist;
                 bestIdx = i;
             }
         }
-
         if (bestIdx == -1) break;
-
         auto& victim = mapGraph[bestIdx];
         saveNodeToDisk(victim.id);
         victim.localFeatures.clear();
@@ -404,7 +330,6 @@ void DroneCore::processMemory() {
         currentRamUsage = estimateRamUsageBytes();
     }
     
-    // Алгоритм загрузки (если подошли близко)
     for (auto& node : mapGraph) {
         if (!node.isOffloaded) continue;
         if (node.position.dist(estimatedPos) < params.newNodeDist) {
@@ -416,46 +341,76 @@ void DroneCore::processMemory() {
 
 void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVelocity) {
     clampCoreParams(params);
-
-    // 1. Предсказание положения (IMU / Одометрия)
     estimatedPos = estimatedPos + (imuVelocity * dt);
 
+    // 1. Фильтруем шум
     const std::vector<LidarPoint> filteredScan = preprocessScan(scan);
 
-    // 2. КОРРЕКЦИЯ ПОЛОЖЕНИЯ (Scan Matching)
-    // Важно: делать ДО того, как добавим новые линии в карту
+    // 2. Scan Matching (по-прежнему нужен)
     alignScanToMap(filteredScan);
 
-    // 3. Формирование облака точек в (теперь уже скорректированных) мировых координатах
-    std::vector<Vec2> cloud;
-    cloud.reserve(filteredScan.size());
-    for (const auto& p : filteredScan) {
-        cloud.push_back(estimatedPos + p.toCartesian());
-    }
-
-    // 4. Выделение геометрии (Split & Merge)
+    // 3. СЕГМЕНТАЦИЯ СКАНА (Вот тут фикс фантомных стен)
+    // Мы не кидаем весь скан в recursiveSplit. Мы режем его на кластеры.
     currentFeatures.clear();
-    if (cloud.size() > 5) {
-        // Разбиваем скан на линии
-        recursiveSplit(cloud, 0, static_cast<int>(cloud.size()) - 1, currentFeatures);
+    
+    if (!filteredScan.empty()) {
+        std::vector<Vec2> currentCluster;
+        currentCluster.reserve(filteredScan.size());
         
-        // Вливаем в глобальную карту
-        mergeIntoGlobal(currentFeatures);
+        currentCluster.push_back(estimatedPos + filteredScan[0].toCartesian());
+
+        for (size_t i = 1; i < filteredScan.size(); ++i) {
+            const auto& prevP = filteredScan[i - 1];
+            const auto& curP = filteredScan[i];
+            
+            // Получаем мировые координаты
+            Vec2 prevWorld = estimatedPos + prevP.toCartesian();
+            Vec2 curWorld = estimatedPos + curP.toCartesian();
+
+            // КРИТЕРИИ РАЗРЫВА ЛИНИИ:
+            
+            // 1. Разрыв по глубине (Shadow problem).
+            // Если соседний луч стал длиннее на 30 единиц - это дыра или угол.
+            float depthJump = std::fabs(curP.dist - prevP.dist);
+            
+            // 2. Разрыв по физической дистанции.
+            // Если точки физически далеко друг от друга (например, на горизонте), не соединяем.
+            float physDist = prevWorld.dist(curWorld);
+
+            bool isBreak = (depthJump > 20.0f) || (physDist > 25.0f);
+
+            if (isBreak) {
+                // Заканчиваем текущий кластер и обрабатываем его
+                if (currentCluster.size() >= 2) {
+                    recursiveSplit(currentCluster, 0, static_cast<int>(currentCluster.size()) - 1, currentFeatures);
+                }
+                currentCluster.clear();
+            }
+            
+            currentCluster.push_back(curWorld);
+        }
+
+        // Добиваем последний хвост
+        if (currentCluster.size() >= 2) {
+            recursiveSplit(currentCluster, 0, static_cast<int>(currentCluster.size()) - 1, currentFeatures);
+        }
     }
 
-    // 5. ОЧИСТКА КАРТЫ (Pruning)
-    // Запускаем не каждый кадр, а раз в ~0.5 сек (30 кадров), это тяжелая операция
+    // 4. Вливаем результат
+    mergeIntoGlobal(currentFeatures);
+
+    // 5. Pruning (Очистка)
     pruneTimer++;
-    if (pruneTimer > 30) {
+    if (pruneTimer > 15) { // Чуть чаще (было 30)
         pruneMap(filteredScan);
         pruneTimer = 0;
     }
 
-    // 6. Рефлекторное управление (отталкивание)
+    // 6. Управление
     Vec2 instantVelocityCommand(0.0f, 0.0f);
-    for (const auto& p : filteredScan) {
+    for (const auto& p : filteredScan) { // Используем фильтрованный, чтобы не шарахаться от глюков
         if (p.dist < params.reflexDist && p.dist > 0.1f) {
-            const float gain = (params.reflexDist - p.dist) * params.reflexForce * 0.15f; // чуть поднял gain
+            const float gain = (params.reflexDist - p.dist) * params.reflexForce * 0.15f;
             instantVelocityCommand = instantVelocityCommand - (p.toCartesian().normalized() * gain);
         }
     }
@@ -464,7 +419,7 @@ void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVe
     smoothedVelocityCommand = smoothedVelocityCommand * (1.0f - smoothing) + instantVelocityCommand * smoothing;
     velocityCommand = smoothedVelocityCommand;
 
-    // 7. Работа с графом (создание узлов пути)
+    // 7. Граф
     if (currentNodeIndex >= 0 && currentNodeIndex < static_cast<int>(mapGraph.size())) {
         float distToCurrent = estimatedPos.dist(mapGraph[currentNodeIndex].position);
         
@@ -472,14 +427,13 @@ void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVe
             GraphNode n;
             n.id = static_cast<int>(mapGraph.size());
             n.position = estimatedPos;
-            n.localFeatures = currentFeatures; // Сохраняем локальный слепок
+            n.localFeatures = currentFeatures; 
             n.connectedNodes.push_back(currentNodeIndex);
             
             mapGraph[currentNodeIndex].connectedNodes.push_back(n.id);
             mapGraph.push_back(n);
             currentNodeIndex = n.id;
         } else {
-            // Обновляем текущий узел актуальными данными
             mapGraph[currentNodeIndex].localFeatures = currentFeatures;
             mapGraph[currentNodeIndex].isOffloaded = false;
         }
@@ -487,7 +441,6 @@ void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVe
 
     processMemory();
 
-    // Логирование
     std::stringstream ss;
     const size_t offloaded = std::count_if(mapGraph.begin(), mapGraph.end(), [](const GraphNode& node) {
         return node.isOffloaded;
@@ -496,7 +449,7 @@ void DroneCore::update(float dt, const std::vector<LidarPoint>& scan, Vec2 imuVe
     ss << "GLOBAL MAP: " << globalLines.size() << " vectors\n";
     ss << "NODES: " << mapGraph.size() << " (offloaded: " << offloaded << ")\n";
     ss << "POS: " << (int)estimatedPos.x << ", " << (int)estimatedPos.y << "\n";
-    ss << "Core: ScanMatched & Pruned"; 
+    ss << "Mode: Segmented & NoSkybox"; 
     memoryLog = ss.str();
 }
 
