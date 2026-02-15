@@ -37,10 +37,12 @@ void updateMapBuffer() {
 }
 
 void generateCaveMap() {
+    // Initialize with lower wall density to create more open space
     for (int i = 0; i < MAP_W * MAP_H; ++i) {
-        worldMap[i] = (rand() % 100 < 45);
+        worldMap[i] = (rand() % 100 < 40);  // Reduced from 45 to 40 for more open space
     }
 
+    // Apply cellular automata with adjusted rules for better connectivity
     for (int iter = 0; iter < 5; ++iter) {
         std::vector<bool> newMap = worldMap;
         for (int y = 1; y < MAP_H - 1; ++y) {
@@ -53,10 +55,121 @@ void generateCaveMap() {
                         }
                     }
                 }
-                newMap[y * MAP_W + x] = (neighbors > 4);
+                
+                // Adjusted rules to create larger open areas but maintain wall connectivity
+                if (neighbors > 4) {
+                    newMap[y * MAP_W + x] = true;
+                } else if (neighbors < 4) {
+                    newMap[y * MAP_W + x] = false;
+                } else {
+                    // Keep original value in edge cases to preserve structure
+                    newMap[y * MAP_W + x] = worldMap[y * MAP_W + x];
+                }
             }
         }
         worldMap = newMap;
+    }
+
+    // Second pass with different rules to enhance connectivity
+    for (int iter = 0; iter < 3; ++iter) {
+        std::vector<bool> newMap = worldMap;
+        for (int y = 2; y < MAP_H - 2; ++y) {
+            for (int x = 2; x < MAP_W - 2; ++x) {
+                int neighbors = 0;
+                // Check a wider area to promote connectivity
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        if (abs(dx) + abs(dy) <= 2) { // Use diamond-shaped neighborhood
+                            if (worldMap[(y + dy) * MAP_W + (x + dx)]) {
+                                ++neighbors;
+                            }
+                        }
+                    }
+                }
+                
+                // Promote openness but maintain structural integrity
+                if (neighbors > 10) {
+                    newMap[y * MAP_W + x] = true;  // Keep large wall sections
+                } else if (neighbors < 6) {
+                    newMap[y * MAP_W + x] = false; // Keep open areas open
+                } else {
+                    newMap[y * MAP_W + x] = worldMap[y * MAP_W + x];
+                }
+            }
+        }
+        worldMap = newMap;
+    }
+
+    // Ensure border areas are clear for drone starting position
+    // Clear a 20-pixel border around the edges to ensure drone can move
+    for (int y = 0; y < MAP_H; ++y) {
+        for (int x = 0; x < MAP_W; ++x) {
+            if (x < 20 || x >= MAP_W - 20 || y < 20 || y >= MAP_H - 20) {
+                worldMap[y * MAP_W + x] = false; // Clear border areas
+            }
+        }
+    }
+
+    // Ensure starting area is clear
+    for (int y = 80; y < 120; ++y) {
+        for (int x = 80; x < 120; ++x) {
+            worldMap[y * MAP_W + x] = false; // Clear starting area around (100,100)
+        }
+    }
+
+    // Connect separate areas by carving tunnels
+    // Find isolated open areas and connect them
+    std::vector<std::vector<bool>> visited(MAP_H, std::vector<bool>(MAP_W, false));
+    
+    // Find all open areas and connect them
+    for (int y = 20; y < MAP_H - 20; ++y) {
+        for (int x = 20; x < MAP_W - 20; ++x) {
+            if (!worldMap[y * MAP_W + x] && !visited[y][x]) {
+                // Found an open area, mark it as visited
+                std::vector<std::pair<int, int>> openArea;
+                std::vector<std::pair<int, int>> queue;
+                queue.push_back({x, y});
+                visited[y][x] = true;
+                
+                while (!queue.empty()) {
+                    auto [cx, cy] = queue.back();
+                    queue.pop_back();
+                    openArea.push_back({cx, cy});
+                    
+                    // Check 4-connected neighbors
+                    int dx[] = {-1, 1, 0, 0};
+                    int dy[] = {0, 0, -1, 1};
+                    
+                    for (int i = 0; i < 4; ++i) {
+                        int nx = cx + dx[i];
+                        int ny = cy + dy[i];
+                        
+                        if (nx >= 20 && nx < MAP_W - 20 && ny >= 20 && ny < MAP_H - 20 &&
+                            !worldMap[ny * MAP_W + nx] && !visited[ny][nx]) {
+                            visited[ny][nx] = true;
+                            queue.push_back({nx, ny});
+                        }
+                    }
+                }
+                
+                // If this open area is too small, expand it slightly
+                if (openArea.size() < 100) {
+                    // Expand this small area by clearing some adjacent walls
+                    for (const auto& [ox, oy] : openArea) {
+                        for (int dy = -2; dy <= 2; ++dy) {
+                            for (int dx = -2; dx <= 2; ++dx) {
+                                int nx = ox + dx;
+                                int ny = oy + dy;
+                                
+                                if (nx >= 20 && nx < MAP_W - 20 && ny >= 20 && ny < MAP_H - 20) {
+                                    worldMap[ny * MAP_W + nx] = false; // Clear to make area larger
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     updateMapBuffer();
@@ -83,6 +196,15 @@ void DrawCircle(HDC hdc, int x, int y, int r, COLORREF color, bool filled) {
         DeleteObject(hBrush);
     }
     DeleteObject(hPen);
+}
+
+bool isPositionInWall(Vec2 pos) {
+    int ix = (int)pos.x;
+    int iy = (int)pos.y;
+    if (ix < 0 || ix >= MAP_W || iy < 0 || iy >= MAP_H) {
+        return true; // Treat out of bounds as wall
+    }
+    return worldMap[iy * MAP_W + ix];
 }
 
 float CastRay(Vec2 start, Vec2 dir) {
@@ -277,7 +399,31 @@ int runSimulator() {
         }
 
         droneVel = input + core.velocityCommand;
-        dronePos = dronePos + droneVel * kFrameDt;
+        Vec2 newDronePos = dronePos + droneVel * kFrameDt;
+        
+        // Boundary checking to prevent drone from going out of bounds
+        if (newDronePos.x < 5.0f) newDronePos.x = 5.0f;
+        if (newDronePos.x >= MAP_W - 5.0f) newDronePos.x = MAP_W - 5.0f;
+        if (newDronePos.y < 5.0f) newDronePos.y = 5.0f;
+        if (newDronePos.y >= MAP_H - 5.0f) newDronePos.y = MAP_H - 5.0f;
+        
+        // Wall collision detection - prevent drone from entering walls
+        if (!isPositionInWall(newDronePos)) {
+            dronePos = newDronePos;
+        } else {
+            // If the new position is in a wall, try to find a valid position along the path
+            // by interpolating between the current position and the attempted position
+            for (float t = 0.9f; t > 0.0f; t -= 0.1f) {
+                Vec2 interpolatedPos = dronePos + (newDronePos - dronePos) * t;
+                if (!isPositionInWall(interpolatedPos)) {
+                    dronePos = interpolatedPos;
+                    break;
+                }
+            }
+            // If all interpolation attempts failed, keep the original position and zero velocity
+            droneVel = Vec2(0.0f, 0.0f);
+        }
+        
         core.update(kFrameDt, scan, droneVel);
 
         drawFrame(hdcMem, hwnd, scan);
