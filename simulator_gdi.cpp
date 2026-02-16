@@ -17,7 +17,7 @@ float kCoreViewScale = 0.6f;
 
 const int MAP_W = 640;
 const int MAP_H = 800;
-std::vector<bool> worldMap(MAP_W * MAP_H, false); // true = wall
+std::vector<bool> worldMap(MAP_W * MAP_H, false);
 uint32_t mapPixels[MAP_H][MAP_W];
 
 Vec2 dronePos(100.0f, 100.0f);
@@ -107,8 +107,8 @@ bool isAreaFree(Vec2 p, int radius) {
     return true;
 }
 
-Vec2 pickSafeSpawn(const std::vector<Vec2>& roomCenters) {
-    for (const Vec2& c : roomCenters) {
+Vec2 pickSafeSpawn(const std::vector<Vec2> &roomCenters) {
+    for (const Vec2 &c : roomCenters) {
         if (isAreaFree(c, 10)) {
             return c;
         }
@@ -133,10 +133,8 @@ void updateMapBuffer() {
 }
 
 void generateCaveMap() {
-    // 1) Start from solid walls
     std::fill(worldMap.begin(), worldMap.end(), true);
 
-    // 2) Create large rooms with different sizes
     std::vector<Vec2> roomCenters;
     const int roomCount = 11 + rand() % 6;
     roomCenters.reserve(roomCount);
@@ -150,7 +148,6 @@ void generateCaveMap() {
         roomCenters.push_back(Vec2(static_cast<float>(cx), static_cast<float>(cy)));
     }
 
-    // 3) Connect rooms with tunnels (chain + random cross-links)
     for (size_t i = 1; i < roomCenters.size(); ++i) {
         const int r = 10 + rand() % 6;
         carveTunnel(roomCenters[i - 1], roomCenters[i], r);
@@ -164,7 +161,6 @@ void generateCaveMap() {
         carveTunnel(roomCenters[a], roomCenters[b], 8 + rand() % 5);
     }
 
-    // 4) Add smaller side caverns
     const int sideCaves = 18 + rand() % 14;
     for (int i = 0; i < sideCaves; ++i) {
         const int cx = 30 + rand() % (MAP_W - 60);
@@ -172,7 +168,6 @@ void generateCaveMap() {
         carveEllipseRoom(cx, cy, 8 + rand() % 22, 8 + rand() % 20);
     }
 
-    // 5) Smooth shape with cave cellular automata
     for (int iter = 0; iter < 3; ++iter) {
         std::vector<bool> next = worldMap;
         for (int y = 1; y < MAP_H - 1; ++y) {
@@ -198,7 +193,6 @@ void generateCaveMap() {
         worldMap.swap(next);
     }
 
-    // 6) Keep map borders solid
     for (int x = 0; x < MAP_W; ++x) {
         setWallCell(x, 0, true);
         setWallCell(x, MAP_H - 1, true);
@@ -208,7 +202,6 @@ void generateCaveMap() {
         setWallCell(MAP_W - 1, y, true);
     }
 
-    // 7) Pick safe spawn and ensure local area free
     mapSpawn = pickSafeSpawn(roomCenters);
     carveDisk(static_cast<int>(mapSpawn.x), static_cast<int>(mapSpawn.y), 14);
     dronePos = mapSpawn;
@@ -286,7 +279,7 @@ void drawUi(HDC hdc, int winW, int winH) {
     DrawTextA(hdc, logs.c_str(), -1, &textR, DT_LEFT);
 }
 
-void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
+void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint> &scan) {
     RECT clRect;
     GetClientRect(hwnd, &clRect);
     const int winW = clRect.right;
@@ -304,26 +297,38 @@ void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
     bmi.bmiHeader.biCompression = BI_RGB;
     StretchDIBits(hdcMem, 0, 0, MAP_W, MAP_H, 0, 0, MAP_W, MAP_H, mapPixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
 
-    for (const auto& p : scan) {
+    for (const auto &p : scan) {
         Vec2 end = dronePos + p.toCartesian();
         DrawLine(hdcMem, (int)dronePos.x, (int)dronePos.y, (int)end.x, (int)end.y, RGB(50, 50, 50));
     }
     DrawCircle(hdcMem, (int)dronePos.x, (int)dronePos.y, 4, RGB(0, 255, 0), true);
 
     Vec2 estPos = core.getEstPos();
-    for (const auto& l : core.getGlobalLines()) {
-        POINT p1 = toCoreView(l.start, estPos, winW, winH);
-        POINT p2 = toCoreView(l.end, estPos, winW, winH);
-        DrawLine(hdcMem, p1.x, p1.y, p2.x, p2.y, RGB(150, 150, 0));
+    
+    const auto &edges = core.getGraphEdges();
+    const auto &nodes = core.getGraph();
+    for (const auto &edge : edges) {
+        if (edge.fromId < 0 || edge.toId < 0 || 
+            edge.fromId >= (int)nodes.size() || edge.toId >= (int)nodes.size()) continue;
+        
+        POINT p1 = toCoreView(nodes[edge.fromId].position, estPos, winW, winH);
+        POINT p2 = toCoreView(nodes[edge.toId].position, estPos, winW, winH);
+        DrawLine(hdcMem, p1.x, p1.y, p2.x, p2.y, RGB(0, 200, 0), 1);
     }
 
-    for (const auto& l : core.getDebugLines()) {
+    for (const auto &l : core.getGlobalLines()) {
+        POINT p1 = toCoreView(l.start, estPos, winW, winH);
+        POINT p2 = toCoreView(l.end, estPos, winW, winH);
+        DrawLine(hdcMem, p1.x, p1.y, p2.x, p2.y, RGB(150, 150, 0), 1);
+    }
+
+    for (const auto &l : core.getDebugLines()) {
         POINT p1 = toCoreView(l.start, estPos, winW, winH);
         POINT p2 = toCoreView(l.end, estPos, winW, winH);
         DrawLine(hdcMem, p1.x, p1.y, p2.x, p2.y, RGB(0, 255, 255), 2);
     }
 
-    for (const auto& n : core.getGraph()) {
+    for (const auto &n : core.getGraph()) {
         POINT p = toCoreView(n.position, estPos, winW, winH);
         DrawCircle(hdcMem, p.x, p.y, 3, n.isOffloaded ? RGB(50, 50, 50) : RGB(255, 0, 0), true);
     }
@@ -334,7 +339,8 @@ void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
     drawUi(hdcMem, winW, winH);
 
     char title[256];
-    sprintf(title, "NoGPS Sim | FPS: %.1f | Global Lines: %zu", currentFps, core.getGlobalLines().size());
+    sprintf(title, "NoGPS Sim | FPS: %.1f | Lines: %zu | Edges: %zu", 
+            currentFps, core.getGlobalLines().size(), core.getGraphEdges().size());
     SetWindowTextA(hwnd, title);
 
     HDC hdcWin = GetDC(hwnd);
@@ -349,7 +355,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
-} // namespace
+}
 
 int runSimulator() {
     CreateDirectoryA("cache", NULL);
@@ -433,7 +439,6 @@ int runSimulator() {
 
         droneVel = input + core.velocityCommand;
 
-        // collision-safe move with axis separation and radius check
         const float bodyRadius = 5.0f;
         Vec2 target = dronePos + droneVel * kFrameDt;
 
