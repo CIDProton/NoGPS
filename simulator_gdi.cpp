@@ -595,8 +595,8 @@ void drawStatsPanel(HDC hdc, int winW, int winH) {
     SetTextColor(hdc, Colors::TextNormal);
     const char* controls[] = {
         "W/S - Thrust Forward/Back",
-        "A/D - Rotate Left/Right",
-        "Q/E - Strafe Left/Right",
+        "Q/E - Rotate Left/Right",
+        "A/D - Strafe Left/Right",
         "R - Reset Map & Core",
         "Z/X - Zoom In/Out",
         "1-5 - Toggle Display",
@@ -786,10 +786,10 @@ void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
 void processInput() {
     input.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
     input.backward = (GetAsyncKeyState('S') & 0x8000) != 0;
-    input.rotateLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
-    input.rotateRight = (GetAsyncKeyState('D') & 0x8000) != 0;
-    input.strafeLeft = (GetAsyncKeyState('Q') & 0x8000) != 0;
-    input.strafeRight = (GetAsyncKeyState('E') & 0x8000) != 0;
+    input.rotateLeft = (GetAsyncKeyState('Q') & 0x8000) != 0;
+    input.rotateRight = (GetAsyncKeyState('E') & 0x8000) != 0;
+    input.strafeLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
+    input.strafeRight = (GetAsyncKeyState('D') & 0x8000) != 0;
     input.reset = (GetAsyncKeyState('R') & 0x8000) != 0;
 
     // Настройка отображения
