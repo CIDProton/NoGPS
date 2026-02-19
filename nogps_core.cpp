@@ -30,9 +30,9 @@ float DroneCore::distToLineSegmentStatic(Vec2 p, Vec2 a, Vec2 b, Vec2& outCloses
     return p.dist(outClosest);
 }
 
-void DroneCore::reset() {
+void DroneCore::reset(const Vec2& spawnPos) {
     std::filesystem::create_directories("cache");
-    estimatedPos = Vec2(400.0f, 300.0f);
+    estimatedPos = spawnPos;
     estimatedOrientation = 0.0f;
     estimatedVelocity = Vec2(0.0f, 0.0f);
     mapGraph.clear();

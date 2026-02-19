@@ -332,7 +332,7 @@ void generateCaveMap() {
         const int r = 12 + rand() % 8;
         carveTunnel(roomCenters[i - 1], roomCenters[i], r);
     }
-    
+
     // Случайные соединения для циклов
     for (int i = 0; i < roomCount / 2; ++i) {
         int a = rand() % roomCount;
@@ -383,7 +383,7 @@ void generateCaveMap() {
 
     mapSpawn = pickSafeSpawn(roomCenters);
     carveDisk(static_cast<int>(mapSpawn.x), static_cast<int>(mapSpawn.y), 18);
-    
+
     // Сброс дрона
     drone.position = mapSpawn;
     drone.velocity = Vec2(0, 0);
@@ -392,8 +392,8 @@ void generateCaveMap() {
     drone.angularVelocity = 0.0f;
     drone.isStuck = false;
     drone.stuckTime = 0.0f;
-    
-    core.reset();
+
+    core.reset(mapSpawn);  // 🆕 Передаём позицию спавна
     updateMapBuffer();
 }
 
