@@ -332,7 +332,7 @@ void generateCaveMap() {
         const int r = 12 + rand() % 8;
         carveTunnel(roomCenters[i - 1], roomCenters[i], r);
     }
-
+    
     // Случайные соединения для циклов
     for (int i = 0; i < roomCount / 2; ++i) {
         int a = rand() % roomCount;
@@ -383,7 +383,7 @@ void generateCaveMap() {
 
     mapSpawn = pickSafeSpawn(roomCenters);
     carveDisk(static_cast<int>(mapSpawn.x), static_cast<int>(mapSpawn.y), 18);
-
+    
     // Сброс дрона
     drone.position = mapSpawn;
     drone.velocity = Vec2(0, 0);
@@ -392,8 +392,8 @@ void generateCaveMap() {
     drone.angularVelocity = 0.0f;
     drone.isStuck = false;
     drone.stuckTime = 0.0f;
-
-    core.reset(mapSpawn);  // 🆕 Передаём позицию спавна
+    
+    core.reset();
     updateMapBuffer();
 }
 
@@ -595,8 +595,8 @@ void drawStatsPanel(HDC hdc, int winW, int winH) {
     SetTextColor(hdc, Colors::TextNormal);
     const char* controls[] = {
         "W/S - Thrust Forward/Back",
-        "Q/E - Rotate Left/Right",
-        "A/D - Strafe Left/Right",
+        "A/D - Rotate Left/Right",
+        "Q/E - Strafe Left/Right",
         "R - Reset Map & Core",
         "Z/X - Zoom In/Out",
         "1-5 - Toggle Display",
@@ -786,10 +786,10 @@ void drawFrame(HDC hdcMem, HWND hwnd, const std::vector<LidarPoint>& scan) {
 void processInput() {
     input.forward = (GetAsyncKeyState('W') & 0x8000) != 0;
     input.backward = (GetAsyncKeyState('S') & 0x8000) != 0;
-    input.rotateLeft = (GetAsyncKeyState('Q') & 0x8000) != 0;
-    input.rotateRight = (GetAsyncKeyState('E') & 0x8000) != 0;
-    input.strafeLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
-    input.strafeRight = (GetAsyncKeyState('D') & 0x8000) != 0;
+    input.rotateLeft = (GetAsyncKeyState('A') & 0x8000) != 0;
+    input.rotateRight = (GetAsyncKeyState('D') & 0x8000) != 0;
+    input.strafeLeft = (GetAsyncKeyState('Q') & 0x8000) != 0;
+    input.strafeRight = (GetAsyncKeyState('E') & 0x8000) != 0;
     input.reset = (GetAsyncKeyState('R') & 0x8000) != 0;
 
     // Настройка отображения

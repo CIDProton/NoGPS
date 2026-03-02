@@ -263,9 +263,9 @@ public:
     ~DroneCore();
 
     // 🆕 Обновление с инерциальными данными вместо абсолютной скорости
-    void update(float currentTime, const std::vector<LidarPoint>& scan,
+    void update(float currentTime, const std::vector<LidarPoint>& scan, 
                 const InertialData& inertial);
-    void reset(const Vec2& spawnPos = Vec2(400.0f, 300.0f));
+    void reset();
 
     // Getters
     const std::vector<GraphNode>& getGraph() const { return mapGraph; }

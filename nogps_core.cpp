@@ -7,6 +7,16 @@
 #include <numeric>
 
 namespace {
+    float distToLineSegmentStatic(Vec2 p, Vec2 a, Vec2 b, Vec2& outClosest) {
+        Vec2 ab = b - a;
+        float l2 = ab.lengthSq();
+        if (l2 == 0.0f) { outClosest = a; return p.dist(a); }
+        float t = ((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / l2;
+        t = std::max(0.0f, std::min(1.0f, t));
+        outClosest = a + ab * t;
+        return p.dist(outClosest);
+    }
+
     void clampParams(CoreParams& p) {
         p.splitTolerance = std::max(0.5f, p.splitTolerance);
         p.mergeTolerance = std::max(1.0f, p.mergeTolerance);
@@ -20,19 +30,9 @@ namespace {
 DroneCore::DroneCore() { reset(); }
 DroneCore::~DroneCore() = default;
 
-float DroneCore::distToLineSegmentStatic(Vec2 p, Vec2 a, Vec2 b, Vec2& outClosest) {
-    Vec2 ab = b - a;
-    float l2 = ab.lengthSq();
-    if (l2 == 0.0f) { outClosest = a; return p.dist(a); }
-    float t = ((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / l2;
-    t = std::max(0.0f, std::min(1.0f, t));
-    outClosest = a + ab * t;
-    return p.dist(outClosest);
-}
-
-void DroneCore::reset(const Vec2& spawnPos) {
+void DroneCore::reset() {
     std::filesystem::create_directories("cache");
-    estimatedPos = spawnPos;
+    estimatedPos = Vec2(400.0f, 300.0f);
     estimatedOrientation = 0.0f;
     estimatedVelocity = Vec2(0.0f, 0.0f);
     mapGraph.clear();
